@@ -3,6 +3,9 @@ Redaction hook: masks secrets/PII before logging.
 Register with higher priority than logging.
 """
 
+# Amplifier module metadata
+__amplifier_module_type__ = "hook"
+
 import logging
 import re
 from typing import Any
