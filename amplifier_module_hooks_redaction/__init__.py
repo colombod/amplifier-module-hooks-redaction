@@ -1,6 +1,11 @@
 """
-Redaction hook: masks secrets/PII before logging.
+Redaction hook: masks secrets/PII in event data for logging.
 Register with higher priority than logging.
+
+Uses HookResult(action="modify") to return redacted copies rather than
+mutating the shared event data dict in-place. Events that feed back into
+LLM context (tool:pre, tool:post) are skipped to avoid corrupting tool
+results the model needs verbatim (e.g. session IDs, timestamps).
 """
 
 # Amplifier module metadata
@@ -55,13 +60,21 @@ async def mount(coordinator: ModuleCoordinator, config: dict[str, Any] | None = 
     allowlist = list(config.get("allowlist", []))
     priority = int(config.get("priority", 10))
 
+    # Events whose data feeds back into LLM context. Redacting these
+    # corrupts tool results the model needs verbatim (session IDs, etc.).
+    context_events = set(config.get("skip_events", [
+        "tool:pre",
+        "tool:post",
+    ]))
+
     async def handler(event: str, data: dict[str, Any]) -> HookResult:
+        if event in context_events:
+            return HookResult(action="continue")
         try:
             redacted = _scrub(data, rules, allowlist)
             if isinstance(redacted, dict):
-                data.clear()
-                data.update(redacted)
-            data["redaction"] = {"applied": True, "rules": rules}
+                redacted["redaction"] = {"applied": True, "rules": rules}
+                return HookResult(action="modify", data=redacted)
         except Exception as e:
             logger.debug(f"Redaction error: {e}")
         return HookResult(action="continue")
