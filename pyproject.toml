@@ -21,7 +21,7 @@ build-backend = "hatchling.build"
 package = true
 
 [tool.uv.sources]
-amplifier-core = { path = "../amplifier-core", editable = true }
+amplifier-core = { git = "https://github.com/microsoft/amplifier-core", branch = "main" }
 
 [tool.hatch.build.targets.wheel]
 packages = [

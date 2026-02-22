@@ -8,6 +8,8 @@ LLM context (tool:pre, tool:post) are skipped to avoid corrupting tool
 results the model needs verbatim (e.g. session IDs, timestamps).
 """
 
+from __future__ import annotations
+
 # Amplifier module metadata
 __amplifier_module_type__ = "hook"
 
