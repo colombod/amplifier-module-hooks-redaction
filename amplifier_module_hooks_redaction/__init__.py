@@ -41,12 +41,24 @@ PII_PATTERNS = [
 # WHAT: These are infrastructure/envelope fields used for session correlation,
 #       lineage tracking, event ordering, and trace identification.
 #
-# WHY:  Usernames can appear in session IDs and project slugs because they
-#       are derived from filesystem paths (e.g., /home/colombod/project →
-#       session_id "colombod_abc123_..."). PII patterns (especially the email
-#       regex) match the username fragment, causing critical identifiers to
-#       display as [REDACTED:PII]. This breaks event correlation, session
-#       lineage trees, and trace verification.
+# WHY:  Two PII regex patterns produce systematic false positives on these
+#       structural fields:
+#
+#       1. Phone regex  \+?\d[\d\s().-]{7,}\d  matches ISO timestamps
+#          (e.g. "2026-02-20T14:30:00Z" → "2026-02-20" triggers the pattern)
+#          and numeric runs inside UUIDs (e.g. "446655440000" inside
+#          "550e8400-e29b-41d4-a716-446655440000"). Every event carries a
+#          timestamp from the kernel's emit(), so without the allowlist every
+#          event's timestamp is replaced with [REDACTED:PII].
+#
+#       2. Email regex  [A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}
+#          can match username fragments when project slugs derived from
+#          filesystem paths (e.g. /home/user/my.project) carry dot-separated
+#          segments into event fields that happen to resemble local-part@domain.
+#
+#       Together these cause critical identifiers to display as [REDACTED:PII],
+#       breaking event correlation, session lineage trees, and trace
+#       verification.
 #
 # HOW:  These defaults are merged (union) with user-provided
 #       config["allowlist"] entries at mount() time. Users extend but never

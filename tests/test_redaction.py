@@ -1,9 +1,9 @@
 """Module-specific tests for the redaction hook.
 
 Tests the DEFAULT_ALLOWLIST behavior: structural event fields that contain
-username-like strings (common in session IDs derived from filesystem paths)
-must survive scrubbing untouched, while secrets/PII in other fields are
-still redacted.
+values triggering PII patterns (ISO timestamps matching the phone regex,
+numeric runs in UUIDs matching the phone regex) must survive scrubbing
+untouched, while secrets/PII in other fields are still redacted.
 """
 
 from amplifier_module_hooks_redaction import DEFAULT_ALLOWLIST, _scrub
@@ -15,33 +15,67 @@ RULES = ["secrets", "pii-basic"]
 class TestDefaultAllowlist:
     """Verify structural fields are protected by the default allowlist."""
 
-    def test_session_id_with_username_survives(self):
-        """A session_id containing a username fragment must not be redacted.
+    def test_timestamp_survives_phone_regex(self):
+        r"""An ISO timestamp in an allowlisted field must not be redacted.
 
-        Real-world case: session IDs are derived from project slugs which
-        include filesystem paths like /home/colombod/..., producing IDs
-        like 'colombod_abc123'. The email PII pattern matches 'colombod'
-        as a local-part prefix, causing unwanted redaction.
+        The phone regex \+?\d[\d\s().-]{7,}\d matches the date portion of
+        ISO timestamps (e.g. "2026-02-20" in "2026-02-20T14:30:00Z")
+        because digits and hyphens satisfy the character class. Every event
+        carries a timestamp from the kernel's emit(), making this the
+        primary systematic false-positive trigger.
         """
         event = {
-            "session_id": "colombod_abc123_20260220",
-            "parent_id": "colombod_parent_session",
-            "timestamp": "2026-02-20T02:30:00Z",
-            "turn_id": "turn_colombod_001",
-            "span_id": "span_colombod_trace",
+            "session_id": "550e8400-e29b-41d4-a716-446655440000",
+            "parent_id": "a1b2c3d4-0000-0000-0000-000000000000",
+            "timestamp": "2026-02-20T14:30:00Z",
+            "turn_id": "turn_001",
+            "span_id": "span_trace_42",
             "type": "session:start",
             "status": "active",
         }
         result = _scrub(event, RULES, DEFAULT_ALLOWLIST)
 
         # Every field here is in DEFAULT_ALLOWLIST — all must survive intact
-        assert result["session_id"] == "colombod_abc123_20260220"
-        assert result["parent_id"] == "colombod_parent_session"
-        assert result["timestamp"] == "2026-02-20T02:30:00Z"
-        assert result["turn_id"] == "turn_colombod_001"
-        assert result["span_id"] == "span_colombod_trace"
+        assert result["session_id"] == "550e8400-e29b-41d4-a716-446655440000"
+        assert result["parent_id"] == "a1b2c3d4-0000-0000-0000-000000000000"
+        assert result["timestamp"] == "2026-02-20T14:30:00Z"
+        assert result["turn_id"] == "turn_001"
+        assert result["span_id"] == "span_trace_42"
         assert result["type"] == "session:start"
         assert result["status"] == "active"
+
+    def test_uuid_survives_phone_regex(self):
+        """A UUID with long numeric runs in an allowlisted field must not be redacted.
+
+        UUIDs like "550e8400-e29b-41d4-a716-446655440000" contain runs such
+        as "446655440000" that the phone regex matches. Session IDs are UUID4
+        values and must survive scrubbing.
+        """
+        event = {
+            "session_id": "550e8400-e29b-41d4-a716-446655440000",
+            "parent_id": "00000000-0000-0000-0000-000000000000",
+        }
+        result = _scrub(event, RULES, DEFAULT_ALLOWLIST)
+
+        assert result["session_id"] == "550e8400-e29b-41d4-a716-446655440000"
+        assert result["parent_id"] == "00000000-0000-0000-0000-000000000000"
+
+    def test_values_actually_trigger_without_allowlist(self):
+        """Confirm the test values DO trigger PII patterns when not allowlisted.
+
+        This is the critical regression guard: if someone changes the regex
+        later, this test will catch it. Without the allowlist, these values
+        MUST be redacted.
+        """
+        event = {
+            "not_allowlisted_ts": "2026-02-20T14:30:00Z",
+            "not_allowlisted_uuid": "550e8400-e29b-41d4-a716-446655440000",
+        }
+        result = _scrub(event, RULES, DEFAULT_ALLOWLIST)
+
+        # These fields are NOT in the allowlist, so PII patterns fire
+        assert "[REDACTED:PII]" in result["not_allowlisted_ts"]
+        assert "[REDACTED:PII]" in result["not_allowlisted_uuid"]
 
     def test_pii_in_non_allowlisted_field_still_redacted(self):
         """Secrets and PII in regular fields must still be caught.
@@ -50,7 +84,7 @@ class TestDefaultAllowlist:
         weaken redaction for fields that aren't structural identifiers.
         """
         event = {
-            "session_id": "colombod_abc123",  # allowlisted — survives
+            "session_id": "550e8400-e29b-41d4-a716-446655440000",
             "user_email": "alice@example.com",  # NOT allowlisted — redacted
             "message": "Contact bob@corp.net for access",  # NOT allowlisted — redacted
             "api_key": "AKIAIOSFODNN7EXAMPLE",  # NOT allowlisted — redacted
@@ -58,7 +92,7 @@ class TestDefaultAllowlist:
         result = _scrub(event, RULES, DEFAULT_ALLOWLIST)
 
         # Allowlisted field survives
-        assert result["session_id"] == "colombod_abc123"
+        assert result["session_id"] == "550e8400-e29b-41d4-a716-446655440000"
         # Non-allowlisted fields are redacted
         assert result["user_email"] == "[REDACTED:PII]"
         assert "bob@corp.net" not in result["message"]
@@ -98,12 +132,12 @@ class TestUserConfigMerge:
         """A user-added allowlist entry actually prevents redaction."""
         effective = DEFAULT_ALLOWLIST | {"custom_id"}
         event = {
-            "session_id": "colombod_abc123",  # default allowlist
+            "session_id": "550e8400-e29b-41d4-a716-446655440000",
             "custom_id": "alice@example.com",  # user allowlist — survives despite PII match
             "notes": "alice@example.com",  # NOT allowlisted — redacted
         }
         result = _scrub(event, RULES, effective)
 
-        assert result["session_id"] == "colombod_abc123"
+        assert result["session_id"] == "550e8400-e29b-41d4-a716-446655440000"
         assert result["custom_id"] == "alice@example.com"  # protected by user entry
         assert result["notes"] == "[REDACTED:PII]"  # not protected
